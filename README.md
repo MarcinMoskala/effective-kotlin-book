@@ -6,8 +6,7 @@ This repository contains some open-sourced chapters of the Effective Kotlin. It 
 
 Currently only one chapter is released, text only, no images: 
 
-Chapter 6: Class Design - chapter is concerned with how classes are designed. 
-
+Chapter 6: Class Design
 
 ## Why?
 
