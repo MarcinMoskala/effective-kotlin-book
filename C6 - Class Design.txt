@@ -1,0 +1,1801 @@
+# Chapter 6: Class design
+
+Classes are the most important abstraction in the Object-Oriented Programming (OOP) paradigm. Since OOP is the most popular paradigm in Kotlin, classes are very important for us as well. This chapter is about class design. Not about system design, since it would require much more space and there are already many great books on this topic such as Clean Architecture by Robert C. Martin or Design Patterns by Erich Gamma, John Vlissides, Ralph Johnson, and Richard Helm. Instead, we will mainly talk about contracts that Kotlin classes are expected to fulfill - how we use Kotlin structures and what is expected from us when we use them. When and how should we use inheritance? How do we expect data classes to be used? When should we use function types instead of interfaces with a single method? What are the contracts of `equals`, `hashCode` and `compareTo`? When should we use extensions instead of members? These are the kind of questions we will answer here. They are all important because breaking them might cause serious problems, and following them will help you make your code safer and cleaner. 
+
+{sample: true}
+## Item 36: Prefer composition over inheritance
+
+{align: right} 
+![](lk.png)
+
+Inheritance is a powerful feature, but it is designed to create a hierarchy of objects with the "is-a" relationship. When such a relationship is not clear, inheritance might be problematic and dangerous. When all we need is a simple code extraction or reuse, inheritance should be used with caution, and we should instead prefer a lighter alternative: class composition. 
+
+### Simple behavior reuse
+
+Let’s start with a simple problem: we have two classes with partially similar behavior - progress bar display before and hide after logic. 
+
+```
+class ProfileLoader {
+
+  fun load() {
+       // show progress
+       // load profile
+       // hide progress
+   }
+}
+
+class ImageLoader {
+
+   fun load() {
+       // show progress
+       // load image
+       // hide progress
+   }
+}
+```
+
+From my experience, many developers would extract this common behavior by extracting a common superclass:
+
+```
+abstract class LoaderWithProgress {
+
+   fun load() {
+       // show progress
+       innerLoad()
+       // hide progress
+   }
+  
+   abstract fun innerLoad()
+}
+
+class ProfileLoader: LoaderWithProgress() {
+
+   override fun innerLoad() {
+       // load profile
+   }
+}
+
+class ImageLoader: LoaderWithProgress() {
+
+   override fun innerLoad() {
+       // load image
+   }
+}
+```
+
+This approach works for such a simple case, but it has important downsides we should be aware of:
+
+* **We can only extend one class.** Extracting functionalities using inheritance often leads to huge BaseXXX classes that accumulate many functionalities or too deep and complex hierarchies of types.
+
+* **When we extend, we take everything from a class**, which leads to classes that have functionality and methods they don’t need (a violation of the Interface Segregation Principle).
+
+* **Using superclass functionality is much less explicit**. In general, it is a bad sign when a developer reads a method and needs to jump into superclasses many times to understand how the method works.
+
+Those are strong reasons that should make us think about an alternative, and a very good one is composition. By composition, we mean holding an object as a property (we compose it) and reusing its functionalities. This is an example of how we can use composition instead of inheritance to solve our problem:
+
+```
+class Progress {
+   fun showProgress() { /* show progress */ }
+   fun hideProgress() { /* hide progress */ }
+}
+
+class ProfileLoader {
+   val progress = Progress()
+  
+   fun load() {
+       progress.showProgress()
+       // load profile
+       progress.hideProgress()
+   }
+}
+
+class ImageLoader {
+   val progress = Progress()
+
+   fun load() {
+       progress.showProgress()
+       // load image
+       progress.hideProgress()
+   }
+}
+```
+
+Notice that composition is harder, as we need to include the composed object and use it in every single class. This is the key reason why many prefer inheritance. However, this additional code is not useless; it informs the reader that progress is used and how it is used. It also gives the developer more power over how progress works.
+
+Another thing to note is that composition is better in a case when we want to extract multiple pieces of functionality. For instance, information that loading has finished:
+
+```
+class ImageLoader {
+   private val progress = Progress()
+   private val finishedAlert = FinishedAlert()
+
+   fun load() {
+       progress.showProgress()
+       // load image
+       progress.hideProgress()
+       finishedAlert.show()
+   }
+}
+```
+
+We cannot extend more than a single class, so if we would want to use inheritance instead, we would be forced to place both functionalities in a single superclass. This often leads to a complex hierarchy of types used to add these functionalities. Such hierarchies are very hard to read and often also to modify. Just think about what happens if we need alert in two subclasses, but not in the third one? One way to deal with this problem is to use a parameterized constructor:
+
+```
+abstract class InternetLoader(val showAlert: Boolean) {
+
+   fun load() {
+       // show progress
+       innerLoad()
+       // hide progress
+       if (showAlert) {
+           // show alert
+       }
+   }
+
+   abstract fun innerLoad()
+}
+
+class ProfileLoader : InternetLoader(showAlert = true) {
+
+   override fun innerLoad() {
+       // load profile
+   }
+}
+
+class ImageLoader : InternetLoader(showAlert = false) {
+
+   override fun innerLoad() {
+       // load image
+   }
+}
+```
+
+This is a bad solution. It takes functionality a subclass doesn't need and blocks it. The problem is compounded when the subclass cannot block other unneeded functionality. When we use inheritance we take everything from the superclass, not only what we need.
+
+### Taking the whole package
+
+When we use inheritance, we take from superclass everything - both methods, expectations (contract) and behavior. Therefore inheritance is a great tool to represent the hierarchy of objects, but not necessarily to just reuse some common parts. For such cases, the composition is better because we can choose what behavior do we need. To think of an example, let’s say that in our system we decided to represent a `Dog` that can `bark` and `sniff`:
+
+```
+abstract class Dog {
+   open fun bark() { /*...*/ }
+   open fun sniff() { /*...*/ }
+}
+```
+
+What if then we need to create a robot dog that can bark but can't sniff? 
+
+```
+class Labrador: Dog()
+
+class RobotDog : Dog() {
+   override fun sniff() {
+       throw Error("Operation not supported")
+       // Do you really want that?
+   }
+}
+```
+
+Notice that such solution violates *interface-segregation principle* - `RobotDog` has a method it doesn’t need. It also violates Liskov Substitution Principle by breaking superclass behavior. On the other hand, what if your `RobotDog` needs to be a `Robot` class as well because `Robot` can calculate (have `calculate` method)? *Multiple inheritance* is not supported in Kotlin.
+
+```
+abstract class Robot {
+   open fun calculate() { /*...*/ }
+}
+
+class RobotDog : Dog(), Robot() // Error
+```
+
+These are serious design problems and limitations that do not occur when you use composition instead. When we use composition we choose what we want to reuse. To represent type hierarchy it is safer to use interfaces, and we can implement multiple interfaces. What was not yet shown is that inheritance can lead to unexpected behavior.  
+
+### Inheritance breaks encapsulation
+
+To some degree, when we extend a class, we depend not only on how it works from outside but also on how it is implemented inside. This is why we say that inheritance breaks encapsulation. Let’s look at an example inspired by the book Effective Java by Joshua Bloch. Let’s say that we need a set that will know how many elements were added to it during its lifetime. This set can be created using inheritance from `HashSet`:
+
+```
+class CounterSet<T>: HashSet<T>() {
+   var elementsAdded: Int = 0
+       private set
+
+   override fun add(element: T): Boolean {
+       elementsAdded++
+       return super.add(element)
+   }
+
+   override fun addAll(elements: Collection<T>): Boolean {
+       elementsAdded += elements.size
+       return super.addAll(elements)
+   }
+}
+```
+
+This implementation might look good, but it doesn’t work correctly:
+
+```
+val counterList = CounterSet<String>()
+counterList.addAll(listOf("A", "B", "C"))
+print(counterList.elementsAdded) // 6
+```
+
+Why is that? The reason is that `HashSet` uses the `add` method under the hood of `addAll`. The counter is then incremented twice for each element added using `addAll`. The problem can be naively solved by removing custom `addAll` function:
+
+```
+class CounterSet<T>: HashSet<T>() {
+   var elementsAdded: Int = 0
+       private set
+
+   override fun add(element: T): Boolean {
+       elementsAdded++
+       return super.add(element)
+   }
+}
+```
+
+Although this solution is dangerous. What if the creators of Java decided to optimize `HashSet.addAll` and implement it in a way that doesn't depend on the `add` method? If they would do that, this implementation would break with a Java update. Together with this implementation, any other libraries which depend on our current implementation will break as well. The Java creators know this, so they are cautious of making changes to these types of implementations. The same problem affects any library creator or even developers of large projects. How can we solve this problem? We should use composition instead of inheritance:
+
+```
+class CounterSet<T> {
+   private val innerSet = HashSet<T>()
+   var elementsAdded: Int = 0
+       private set
+
+   fun add(element: T) {
+       elementsAdded++
+       innerSet.add(element)
+   }
+
+   fun addAll(elements: Collection<T>) {
+       elementsAdded += elements.size
+       innerSet.addAll(elements)
+   }
+}
+
+val counterList = CounterSet<String>()
+counterList.addAll(listOf("A", "B", "C"))
+print(counterList.elementsAdded) // 3
+```
+
+One problem is that in this case, we lose polymorphic behavior: `CounterSet` is not a `Set` anymore. To keep it, we can use the delegation pattern. The delegation pattern is when our class implements an interface, composes an object that implements the same interface, and forwards methods defined in the interface to this composed object. Such methods are called *forwarding methods*. Take a look at the following example:
+
+```
+class CounterSet<T> : MutableSet<T> {
+   private val innerSet = HashSet<T>()
+   var elementsAdded: Int = 0
+       private set
+
+   override fun add(element: T): Boolean {
+       elementsAdded++
+       return innerSet.add(element)
+   }
+
+   override fun addAll(elements: Collection<T>): Boolean {
+       elementsAdded += elements.size
+       return innerSet.addAll(elements)
+   }
+
+   override val size: Int
+       get() = innerSet.size
+
+   override fun contains(element: T): Boolean =
+           innerSet.contains(element)
+
+   override fun containsAll(elements: Collection<T>): 
+Boolean = innerSet.containsAll(elements)
+
+   override fun isEmpty(): Boolean = innerSet.isEmpty()
+
+   override fun iterator() =
+           innerSet.iterator()
+
+   override fun clear() =
+           innerSet.clear()
+
+   override fun remove(element: T): Boolean =
+           innerSet.remove(element)
+
+   override fun removeAll(elements: Collection<T>): 
+Boolean = innerSet.removeAll(elements)
+
+   override fun retainAll(elements: Collection<T>): 
+Boolean = innerSet.retainAll(elements)
+}
+```
+
+The problem now is that we need to implement a lot of forwarding methods (nine, in this case). Thankfully, Kotlin introduced interface delegation support that is designed to help in this kind of scenario. When we delegate an interface to an object, Kotlin will generate all the required forwarding methods during compilation. Here is Kotlin interface delegation presented in action:
+
+```
+class CounterSet<T>(
+   private val innerSet: MutableSet<T> = mutableSetOf()
+) : MutableSet<T> by innerSet {
+
+   var elementsAdded: Int = 0
+       private set
+
+   override fun add(element: T): Boolean {
+       elementsAdded++
+       return innerSet.add(element)
+   }
+
+   override fun addAll(elements: Collection<T>): Boolean {
+       elementsAdded += elements.size
+       return innerSet.addAll(elements)
+   }
+}
+```
+
+This is a case where delegation is a good choice: we need polymorphic behavior and inheritance would be dangerous. In most cases, polymorphic behavior is not needed or we use it in a different way. In such a case composition without delegation is more suitable. It is easier to understand and more flexible.
+
+The fact that inheritance breaks encapsulation is a security concern, but in many cases, the behavior is specified in a contract (comments, unit tests) or we don’t depend on it in subclasses (this is generally true when methods are designed for inheritance). There are other reasons to choose the composition. The composition is easier to reuse and gives us more flexibility. 
+
+### Restricting overriding
+
+To prevent developers from extending classes that are not designed for an inheritance, we can just keep them final. Though if for a reason we need to allow inheritance, still all methods are final by default. To let developers override them, they must be set to open:
+
+```
+open class Parent {
+   fun a() {}
+   open fun b() {}
+}
+
+class Child: Parent() {
+   override fun a() {} // Error
+   override fun b() {}
+}
+```
+
+Use this mechanism wisely and open only those methods that are designed for inheritance. Also remember that when you override a method, you can make it final for all subclasses:
+
+```
+open class ProfileLoader: InternetLoader() {
+
+   final override fun loadFromInterner() {
+       // load profile
+   }
+}
+```
+
+This way you can limit the number of methods that can be overridden in subclasses. 
+
+### Summary
+
+There are a few important differences between composition and inheritance:
+
+* **Composition is more secure** - We do not depend on how a class is implemented, but only on its externally observable behavior. 
+
+* **Composition is more flexible** - We can only extend a single class, while we can compose many. When we inherit, we take everything, while when we compose, we can choose what we need. When we change the behavior of a superclass, we change the behavior of all subclasses. It is hard to change the behavior of only some subclasses. When a class we composed changes, it will only change our behavior if it changed its contract to the outside world.
+
+* **Composition is more explicit** - This is both an advantage and a disadvantage. When we use a method from a superclass we don’t need to reference any receiver (we don’t need to use `this` keyword). It is less explicit, what means that it requires less work but it can be confusing and is more dangerous as it is easy to confuse where a method comes from (is it from the same class, superclass, top-level or is it an extension). When we call a method on a composed object, we know where it comes from. 
+
+* **Composition is more demanding** - We need to use composed object explicitly. When we add some functionalities to a superclass we often do not need to modify subclasses. When we use composition we more often need to adjust usages. 
+
+* **Inheritance gives us a strong polymorphic behavior** - This is also a double-edged sword. From one side, it is comfortable that a dog can be treated like an animal. On the other side, it is very constraining. It must be an animal. Every subclass of the animal should be consistent with animal behaviour. Superclass set contract and subclasses should respect it. 
+
+It is a general OOP rule to prefer composition over inheritance, but Kotlin encourages composition even more by making all classes and methods final by default and by making interface delegation a first-class citizen. This makes this rule even more important in Kotlin projects.
+
+When is composition more reasonable then? The rule of thumb: **we should use inheritance when there is a definite "is a" relationship**. Not only linguistically, but meaning that every class that inherits from a superclass needs to “be” its superclass. All unit tests for superclasses should always pass for their subclasses (Liskov substitution principle). Object-oriented frameworks for displaying views are good examples: `Application` in JavaFX, `Activity` in Android, `UIViewController` in iOS, and `React.Component` in React. The same is true when we define our own special kind of view element that always has the same set of functionalities and characteristics. Just remember to design these classes with inheritance in mind, and specify how inheritance should be used. Also, keep methods that are not designed for inheritance final. 
+
+{sample: false}
+
+
+
+
+## Item 37: Use the data modifier to represent a bundle of data
+
+Sometimes we just need to pass around a bundle of data. This is what we use data classes for. These are classes with the `data` modifier. From my experience, developers quickly introduce it into their data model classes:
+
+```
+data class Player(
+       val id: Int,
+       val name: String,
+       val points: Int
+)
+
+val player = Player(0, "Gecko", 9999)
+```
+
+When we add the `data` modifier, it generates a few useful functions:
+* `toString`
+* `equals` and `hashCode`
+* `copy`
+* `componentN`
+Let’s discuss them one after another in terms of data classes.
+
+`toString` displays the name of the class and the values of all primary constructor properties with their names. Useful for logging and debugging.
+
+```
+print(player) // Player(id=0, name=Gecko, points=9999)
+```
+
+{width: 84%}
+![](image_15.png)
+
+
+
+`equals` checks if all primary constructor properties are equal, and `hashCode` is coherent with it (see 38: Respect the contract of hashCode).
+
+```
+player == Player(0, "Gecko", 9999) // true
+player == Player(0, "Ross", 9999) // false
+```
+
+`copy` is especially useful for immutable data classes. It creates a new object where each primary constructor properties have the same value by default, but each of them can be changed using named arguments.
+
+```
+val newObj = player.copy(name = "Thor")
+print(newObj) // Player(id=0, name=Thor, points=9999)
+```
+
+We cannot see the `copy` method because it is generated under the hood just like the other methods generated thanks to the data modifier. If we were able to see it, this is what it would look like for the class `Person`:
+
+```
+// This is how `copy` is generated under the hood by
+// data modifier for `Person` class looks like
+fun copy(
+   id: Int = this.id,
+   name: String = this.name,
+   points: Int = this.points
+) = Player(id, name, points)
+```
+
+Notice that `copy` method makes a shallow copy of an object, but it is not a problem when object is immutable - for immutable objects we do not need deep copies. 
+
+`componentN` functions (`component1`, `component2`, etc.) allow position-based destructuring. Like in the below example:
+
+```
+val (id, name, pts) = player
+```
+
+Destructuring in Kotlin translates directly into variable definitions using the  `componentN` functions, so this is what the above line will be compiled to under the hood:
+
+```
+// After compilation
+val id: Int  = player.component1()
+val name: String = player.component2()
+val pts: Int = player.component3()
+```
+
+This approach has its pros and cons. The biggest advantage is that we can name variables however we want. We can also destructure everything we want as long as it provides `componentN` functions. This includes `List` and `Map.Entry`:
+
+```
+val visited = listOf("China", "Russia", "India")
+val (first, second, third) = visited
+println("$first $second $third")
+// China Russia India
+
+val trip = mapOf(
+   "China" to "Tianjin",
+   "Russia" to "Petersburg",
+   "India" to "Rishikesh"
+)
+for ((country, city) in trip) {
+   println("We loved $city in $country")
+   // We loved Tianjin in China
+   // We loved Petersburg in Russia
+   // We loved Rishikesh in India
+}
+```
+
+On the other hand, it is dangerous. We need to adjust every destructuring when the order of elements in data class change. It is also easy to destructure incorrectly by confusing order:
+
+```
+data class FullName(
+    val firstName: String,
+    val secondName: String,
+    val lastName: String
+)
+
+val elon = FullName("Elon", "Reeve", "Musk")
+val (name, surname) = elon
+print("It is $name $surname!") // It is Elon Reeve!
+```
+
+We need to be careful with destructuring. It is useful to use the same names as data class primary constructor properties. Then in case of an incorrect order, an IntelliJ/Android Studio warning will be shown. It might be even useful to upgrade this warning into an error. 
+
+{width: 84%}
+![](fullname.png)
+
+
+### Prefer data classes instead of tuples
+
+Data classes offer more than what is generally offered by tuples. More concretely, Kotlin tuples are just generic data classes which are `Serializable` and have a custom `toString` method:
+
+```
+public data class Pair<out A, out B>(
+   public val first: A,
+   public val second: B
+) : Serializable {
+
+   public override fun toString(): String = 
+        "($first, $second)"
+}
+
+public data class Triple<out A, out B, out C>(
+   public val first: A,
+   public val second: B,
+   public val third: C
+) : Serializable {
+
+   public override fun toString(): String = 
+        "($first, $second, $third)"
+}
+
+```
+
+Why do I show only `Pair` and `Triple`? It is because they are the last tuples that are left in Kotlin. Kotlin had support for tuples when it was still in beta version. We were able to define a tuple by brackets and a set of types:(`Int`, `String`, `String`, `Long`). What we achieved, in the end, behaved the same as data classes, but was far less readable. Can you guess what type this set of types represents? It can be anything. Using tuples is tempting, but using data classes is nearly always better. This is why tuples were removed and only `Pair` and `Triple` are left. They stayed because they are used for local purposes:
+
+* When we immediately name values:
+
+```
+val (description, color) = when {
+   degrees < 5 -> "cold" to Color.BLUE
+   degrees < 23 -> "mild" to Color.YELLOW
+   else -> "hot" to Color.RED
+}
+
+```
+
+* To represent an aggregate not known in advance — as is commonly found in standard library functions:
+
+```
+val (odd, even) = numbers.partition { it % 2 == 1 }
+val map = mapOf(1 to "San Francisco", 2 to "Amsterdam")
+```
+
+In other cases, we prefer data classes. Take a look at an example: Let’s say that we need a function that parses a full name into name and surname. One might represent this name and surname as a `Pair<String, String>`:
+
+```
+fun String.parseName(): Pair<String, String>? {
+   val indexOfLastSpace = this.trim().lastIndexOf(' ')
+   if(indexOfLastSpace < 0) return null
+   val firstName = this.take(indexOfLastSpace)
+   val lastName = this.drop(indexOfLastSpace)
+   return Pair(firstName, lastName)
+}
+
+// Usage
+val fullName = "Marcin Moskała"
+val (firstName, lastName) = fullName.parseName() ?: return
+```
+
+The problem is that when someone reads it, it is not clear that `Pair<String, String>` represents a full name. What is more, it is not clear what is the order of the values. Someone could think that surname goes first:
+
+```
+val fullName = "Marcin Moskała"
+val (lastName, firstName) = fullName.parseName() ?: return
+print("His name is $firstName") // His name is Moskała
+```
+
+To make usage safer and the function easier to read, we should use a data class instead:
+
+```
+data class FullName(
+    val firstName: String, 
+    val lastName: String
+)
+
+fun String.parseName(): FullName? {
+   val indexOfLastSpace = this.trim().lastIndexOf(' ')
+   if(indexOfLastSpace < 0) return null
+   val firstName = this.take(indexOfLastSpace)
+   val lastName = this.drop(indexOfLastSpace)
+   return FullName(firstName, lastName)
+}
+
+// Usage
+val fullName = "Marcin Moskała"
+val (firstName, lastName) = fullName.parseName() ?: return
+```
+
+It costs nearly nothing, and improves the function significantly:
+
+* The return type of this function is clear.
+
+* The return type is shorter and easier to pass forward. 
+
+* If a user destructures to variables with different names than those described in the data class, a warning will be displayed. 
+
+If you don’t want this class in a wider scope, you can restrict its visibility. It can even be private if you need to use it for some local processing only in a single file or class. It is worth using data classes instead of tuples. Classes are cheap in Kotlin, do not be afraid to use them.
+
+
+## Item 38: Use function types instead of interfaces to pass operations and actions
+
+Many languages do not have the concept of a function type. Instead, they use interfaces with a single method. Such interfaces are known as SAM’s (Single-Abstract Method). Here is an example SAM used to pass information about what should happen when a view is clicked:
+
+```
+interface OnClick {
+   fun clicked(view: View)
+}
+```
+
+When a function expects a SAM, we must pass an instance of an object that implements this interface[^footnote_610_note]. 
+
+```
+fun setOnClickListener(listener: OnClick) {
+   //...
+}
+
+setOnClickListener(object : OnClick {
+   override fun clicked(view: View) {
+       // ...
+   }
+})
+```
+
+However, notice that declaring a parameter with a function type gives us much more freedom:
+
+```
+fun setOnClickListener(listener: (View) -> Unit) {
+   //... 
+}
+```
+
+Now, we can pass the parameter as:
+
+* A lambda expression or an anonymous function
+
+```
+setOnClickListener { /*...*/ }
+setOnClickListener(fun(view) { /*...*/ })
+```
+
+* A function reference or bounded function reference
+
+```
+setOnClickListener(::println)
+setOnClickListener(this::showUsers)
+```
+
+* Objects that implement the declared function type
+
+```
+class ClickListener: (View)->Unit {
+   override fun invoke(view: View) {
+       // ...
+   }
+}
+
+setOnClickListener(ClickListener())
+```
+
+These options can cover a wider spectrum of use cases. On the other hand, one might argue that the advantage of a SAM is that it and its arguments are named. Notice that we can name function types using type aliases as well. 
+
+```
+typealias OnClick = (View) -> Unit
+```
+
+Parameters can also be named. The advantage of naming them is that these names can then be suggested by default by an IDE.
+
+```
+fun setOnClickListener(listener: OnClick) { /*...*/ }
+typealias OnClick = (view: View)->Unit
+```
+
+{width: 84%}
+![](image_16.png)
+
+
+
+Notice that when we use lambda expressions, we can also destructure arguments. Together, this makes function types generally a better option than SAMs. 
+
+This argument is especially true when we set many observers. The classic Java way often is to collect them in a single listener interface:
+
+```
+class CalendarView {
+   var listener: Listener? = null
+
+   interface Listener {
+       fun onDateClicked(date: Date)
+       fun onPageChanged(date: Date)
+   }
+}
+```
+
+I believe this is largely a result of laziness. From an API consumer’s point of view, it is better to set them as separate properties holding function types:
+
+```
+class CalendarView {
+   var onDateClicked: ((date: Date) -> Unit)? = null
+   var onPageChanged: ((date: Date) -> Unit)? = null
+}
+```
+
+This way, the implementations of `onDateClicked` and `onPageChanged` do not need to be tied together in an interface. Now, these functions may be changed independently. 
+
+If you don’t have a good reason to define an interface, prefer using function types. They are well supported and are used frequently by Kotlin developers. 
+
+### When should we prefer a SAM?
+
+There is one case when we prefer a SAM: When we design a class to be used from another language than Kotlin. Interfaces are cleaner for Java clients. They cannot see type aliases nor name suggestions. Finally, Kotlin function types when used from some languages (especially Java) require functions to return `Unit` explicitly:
+
+```
+// Kotlin
+class CalendarView() {
+   var onDateClicked: ((date: Date) -> Unit)? = null
+   var onPageChanged: OnDateClicked? = null
+}
+
+interface OnDateClicked {
+   fun onClick(date: Date)
+}
+
+// Java
+CalendarView c = new CalendarView();
+c.setOnDateClicked(date -> Unit.INSTANCE);
+c.setOnPageChanged(date -> {});
+```
+
+This is why it might be reasonable to use SAM instead of function types when we design API for use from Java. Though in other cases, prefer function types. 
+
+
+
+## Item 39: Prefer class hierarchies to tagged classes
+
+It is not uncommon in large projects to find classes with a constant "mode" that specifies how the class should behave. We call such classes tagged as they contain a tag that specifies their mode of operation. There are many problems with them, and most of those problems originate from the fact that different responsibilities from different modes are fighting for space in the same class even though they are generally distinguishable from each other. For instance, in the following snippet, we can see a class that is used in tests to check if a value fulfills some criteria. This example is simplified, but it’s a real example from a large project[^footnote_611_note]. 
+
+```
+class ValueMatcher<T> private constructor(
+   private val value: T? = null,
+   private val matcher: Matcher
+){
+
+   fun match(value: T?) = when(matcher) {
+       Matcher.EQUAL -> value == this.value
+       Matcher.NOT_EQUAL -> value != this.value
+       Matcher.LIST_EMPTY -> value is List<*> && 
+value.isEmpty()
+       Matcher.LIST_NOT_EMPTY -> value is List<*> && 
+value.isNotEmpty()
+   }
+
+   enum class Matcher {
+       EQUAL,
+       NOT_EQUAL,
+       LIST_EMPTY,
+       LIST_NOT_EMPTY
+   }
+
+   companion object {
+       fun <T> equal(value: T) =
+           ValueMatcher<T>(value = value, matcher = 
+Matcher.EQUAL)
+
+       fun <T> notEqual(value: T) =
+           ValueMatcher<T>(value = value, matcher = 
+Matcher.NOT_EQUAL)
+
+       fun <T> emptyList() =
+           ValueMatcher<T>(matcher = Matcher.LIST_EMPTY)
+
+       fun <T> notEmptyList() =
+           ValueMatcher<T>(matcher = 
+Matcher.LIST_NOT_EMPTY)
+   }
+}
+```
+
+There are many downsides to this approach:
+
+* Additional boilerplate from handling multiple modes in a single class
+* Inconsistently used properties, as they are used for different purposes. Also, the object generally has more properties than they need as they might be required by other modes. For instance, in the example above, value is not used when the mode is `LIST_EMPTY` or `LIST_NOT_EMPTY`. 
+* It is hard to protect state consistency and correctness when elements have multiple purposes and can be set in a few ways. 
+* It is often required to use a factory method because otherwise, it is hard to ensure that objects are created correctly. 
+
+Instead of tagged classes, we have a better alternative in Kotlin: sealed classes. Instead of accumulating multiple modes in a single class, we should define multiple classes for each mode, and use the type system to allow their polymorphic use. Then the additional `sealed` modifier seals those classes as a set of alternatives. Here is how it could have been implemented:
+
+```
+sealed class ValueMatcher<T> {
+    abstract fun match(value: T): Boolean
+
+    class Equal<T>(val value: T) : ValueMatcher<T>() {
+        override fun match(value: T): Boolean = 
+            value == this.value
+    }
+
+    class NotEqual<T>(val value: T) : ValueMatcher<T>() {
+        override fun match(value: T): Boolean = 
+            value != this.value
+    }
+
+    class EmptyList<T>() : ValueMatcher<T>() {
+        override fun match(value: T) = 
+            value is List<*> && value.isEmpty()
+    }
+
+    class NotEmptyList<T>() : ValueMatcher<T>() {
+        override fun match(value: T) = 
+            value is List<*> && value.isNotEmpty()
+    }
+}
+```
+
+Such implementation is much cleaner as there are not multiple responsibilities tangled with each other. Every object has only the data it requires and can define what parameters it is willing to have. Using a type hierarchy allows to eliminate all shortcomings of tagged classes. 
+
+### Sealed modifier
+
+We do not necessarily need to use the `sealed` modifier. We could use `abstract` instead, but `sealed` forbids any subclasses to be defined outside of that file. Thanks to that, if we cover all those types in `when`, we do not need to use an `else` branch, as it’s guaranteed to be exhaustive. Using this advantage, we can easily add new functionalities and know that we won't forget to cover them in these `when` statements.
+
+This is a convenient way to define operations that behave differently for different modes. For instance, we can define `match` using `when` instead of by defining how it should behave in all subclasses. New functions can be added this way even as extensions. 
+
+```
+fun <T> ValueMatcher<T>.reversed(): ValueMatcher<T> = 
+when (this) {
+    is ValueMatcher.EmptyList -> 
+        ValueMatcher.NotEmptyList<T>()
+    is ValueMatcher.NotEmptyList -> 
+        ValueMatcher.EmptyList<T>()
+    is ValueMatcher.Equal -> ValueMatcher.NotEqual(value)
+    is ValueMatcher.NotEqual -> ValueMatcher.Equal(value)
+}
+```
+
+On the other hand, when we use `abstract` we leave the door open for other developers to create new instances outside of our control. In such a case, we should declare our functions as abstract and implement them in the subclasses,  because if we use `when`, our function cannot work properly when new classes are added outside of our project. 
+
+### Tagged classes are not the same as state pattern
+
+Tagged classes should not be confused with the *state pattern*, a behavioral software design pattern that allows an object to alter its behavior when its internal state changes. This pattern is often used in front-end controllers, presenters or view models (respectively from MVC, MVP, and MVVM architectures). For instance, let’s say that you write an application for morning exercises. Before every exercise, there is preparation time, and in the end, there is a screen that states that you are done with the training. 
+
+{width: 100%}
+![](exercise.png)
+
+
+
+When we use the state pattern, we have a hierarchy of classes representing different states, and a read-write property we use to represent which state is the current one:
+
+```
+sealed class WorkoutState
+
+class PrepareState(val exercise: Exercise) : 
+WorkoutState()
+
+class ExerciseState(val exercise: Exercise) : 
+WorkoutState() 
+
+object DoneState : WorkoutState()
+
+fun List<Exercise>.toStates(): List<WorkoutState> =
+   flatMap { exercise -> 
+     listOf(PrepareState(exercise), 
+ExerciseState(exercise)) 
+   } + DoneState
+
+class WorkoutPresenter( /*...*/ ) {
+   private var state: WorkoutState = states.first()
+
+   //...
+}
+```
+
+The difference here is that:
+* The state is a part of a bigger class with more responsibilities
+* State needs to change
+
+The state is generally kept in a single read-write property `state`. The concrete state is represented with an object, and we prefer this object to be sealed class hierarchy instead of tagged class. We also prefer it as an immutable object and whenever we need to change it, we change `state` property. It is not uncommon for `state` to later be observed to update the view every time it changes:
+
+```
+private var state: WorkoutState by 
+    Delegates.observable(states.first()) { _, _, _ ->
+       updateView()
+    }
+```
+
+### Summary
+
+In Kotlin, we use type hierarchies instead of tagged classes. We most often represent those type hierarchies as sealed classes as they represent a sum type (a type collecting alternative class options). It doesn’t collide with the state pattern, which is a popular and useful pattern in Kotlin. They actually cooperate as when we implement state, we prefer to use sealed hierarchies instead of tagged classes. This is especially true when we implement complex yet separable states on a single view.  
+
+
+
+
+
+## Item 40: Respect the contract of `equals`
+
+In Kotlin, every object extends `Any`, which has a few methods with well-established contracts. These methods are:
+* `equals`
+* `hashCode`
+* `toString`
+
+Their contract is described in their comments and elaborated in the official documentation, and as I described in *Item 32: Respect abstraction contracts*, every subtype of a type with a set contract should respect this contract. These methods have an important position in Kotlin, as they have been defined since the beginning of Java, and therefore many objects and functions depend on their contract. Breaking their contract will often lead to some objects or functions not working properly. This is why in the current and next items we will talk about overriding these functions and about their contracts. Let’s start with `equals`. 
+
+### Equality
+
+In Kotlin, there are two types of equality:
+
+* Structural equality - checked by the `equals` method or `==` operator (and its negated counterpart `!=`) which is based on the `equals` method. `a == b` translates to `a.equals(b)` when `a` is not nullable, or otherwise to `a?.equals(b) ?: (b === null)`.
+
+* Referential equality - checked by the  `===` operator (and its negated counterpart `!==`), returns `true` when both sides point to the same object. 
+
+Since `equals` is implemented in `Any`, which is the superclass of every class, we can check the equality of any two objects. Although using operators to check equality is not allowed when objects are not of the same type:
+
+```
+open class Animal
+class Book
+Animal() == Book()  // Error: Operator == cannot be 
+// applied to Animal and Book
+Animal() === Book() // Error: Operator === cannot be 
+// applied to Animal and Book
+```
+
+Objects either need to have the same type or one needs to be a subtype of another:
+
+```
+class Cat: Animal()
+Animal() == Cat()  // OK, because Cat is a subclass of 
+// Animal
+Animal() === Cat() // OK, because Cat is a subclass of 
+// Animal
+```
+
+It is because it does not make sense to check equality of two objects of a different type. It will get clear when we will explain the contract of equals. 
+
+### Why do we need equals?
+
+The default implementation of `equals` coming from `Any` checks if another object is exactly the same instance. Just like referential equality (`===`). It means that every object by default is unique:
+
+```
+class Name(val name: String)
+val name1 = Name("Marcin")
+val name2 = Name("Marcin")
+val name1Ref = name1
+
+name1 == name1 // true
+name1 == name2 // false
+name1 == name1Ref // true
+
+name1 === name1 // true
+name1 === name2 // false
+name1 === name1Ref // true
+```
+
+Such behavior is useful for many objects. It is perfect for active elements, like a database connection, a repository, or a thread. However, there are objects where we need to represent equality differently. A popular alternative is a data class equality that checks if all primary constructor properties are equal:
+
+```
+data class FullName(val name: String, val surname: String)
+val name1 = FullName("Marcin", "Moskała")
+val name2 = FullName("Marcin", "Moskała")
+val name3 = FullName("Maja", "Moskała")
+  
+name1 == name1 // true
+name1 == name2 // true, because data are the same
+name1 == name3 // false
+  
+name1 === name1 // true
+name1 === name2 // false
+name1 === name3 // false
+```
+
+Such behavior is perfect for classes that are represented by the data they hold, and so we often use the data modifier in data model classes or in other data holders. 
+
+Notice that data class equality also helps when we need to compare some but not all properties. For instance when we want to skip cache or other redundant properties. Here is an example of an object representing date and time having properties `asStringCache` and `changed` that should not be compared by equality check: 
+
+```
+class DateTime(
+   /** The millis from 1970-01-01T00:00:00Z */
+   private var millis: Long = 0L,
+   private var timeZone: TimeZone? = null
+) {
+   private var asStringCache = ""
+   private var changed = false
+
+   override fun equals(other: Any?): Boolean =
+       other is DateTime &&
+               other.millis == millis &&
+               other.timeZone == timeZone
+  
+   //...
+}
+```
+
+The same can be achieved by using data modifier:
+
+```
+data class DateTime(
+   private var millis: Long = 0L,
+   private var timeZone: TimeZone? = null
+) {
+   private var asStringCache = ""
+   private var changed = false
+  
+   //...
+}
+```
+
+Just notice that `copy` in such case will not copy those properties that are not declared in the primary constructor. Such behavior is correct only when those additional properties are truly redundant (the object will behave correctly when they will be lost).
+
+Thanks to those two alternatives, default and data class equality, **we rarely need to implement equality ourselves in Kotlin**. Although there are cases where we need to implement equals ourselves. 
+
+Another example is when just concrete property decides if two objects are equal. For instance, a `User` class might have an assumption that two users are equal when their `id` is equal. 
+
+```
+class User(
+   val id: Int,
+   val name: String,
+   val surname: String
+) {
+   override fun equals(other: Any?): Boolean =
+       other is User && other.id == id
+
+   override fun hashCode(): Int = id
+}
+```
+
+As you can see, we implement `equals` ourselves when:
+
+* We need its logic to differ from the default one
+* We need to compare only a subset of properties
+* We do not want our object to be a data class or properties we need to compare are not in the primary constructor
+
+### The contract of equals
+
+This is how `equals` is described in its comments (Kotlin 1.3.11, formatted):
+
+Indicates whether some other object is "equal to" this one. Implementations must fulfill the following requirements:
+
+* Reflexive: for any non-null value `x`, `x.equals(x)` should return `true`.
+
+* Symmetric: for any non-null values `x` and `y`, `x.equals(y)` should return `true` if and only if `y.equals(x)` returns true.
+
+* Transitive:  for any non-null values `x`, `y`, and `z`, if `x.equals(y)` returns `true` and `y.equals(z)` returns `true`, then `x.equals(z)` should return `true`.
+
+* Consistent:  for any non-null values `x` and `y`, multiple invocations of `x.equals(y)` consistently return `true` or consistently return `false`, provided no information used in `equals` comparisons on the objects is modified.
+
+* Never equal to null: for any non-null value `x`, `x.equals(null)` should return `false`.
+
+Additionally, we expect `equals`, `toString` and `hashCode` to be fast. It is not a part of the official contract, but it would be highly unexpected to wait a few seconds to check if two elements are equal.
+
+All those requirements are important. They are assumed from the beginning, also in Java, and so now many objects depend on those assumptions. Don’t worry if they sound confusing right now, we’ll describe them in detail.
+
+* Object equality should be **reflexive**, meaning that `x.equals(x)` returns `true`. Sounds obvious, but this can be violated. For instance, someone might want to make a `Time` object that represents the current time, and compares milliseconds:
+
+```
+// DO NOT DO THIS!
+class Time(
+   val millisArg: Long = -1,
+   val isNow: Boolean = false
+) {
+   val millis: Long get() =
+       if (isNow) System.currentTimeMillis() 
+       else millisArg
+
+   override fun equals(other: Any?): Boolean =
+       other is Time && millis == other.millis
+}
+
+val now = Time(isNow = true)
+now == now // Sometimes true, sometimes false   
+List(100000) { now }.all { it == now }
+// Most likely false
+```
+
+Notice that here the result is inconsistent, so it also violates the last principle. 
+
+When an object is not equal to itself, it might not be found in most collections even if it is there when we check using the `contains` method. It will not work correctly in most unit tests assertions either. 
+
+```
+val now1 = Time(isNow = true)
+val now2 = Time(isNow = true)
+assertEquals(now1, now2) 
+// Sometimes passes, sometimes not
+```
+
+**When the result is not constant, we cannot trust it.** We can never be sure if the result is correct or is it just a result of inconsistency. 
+ 
+How should we improve it? A simple solution is that check separately if the object represents the current time and if not, then whether it has the same timestamp. Though it is a typical example of tagged class, and as described in *Item 39: Prefer class hierarchies to tagged classes*, it would be even better to use class hierarchy instead:
+
+```
+sealed class Time
+data class TimePoint(val millis: Long): Time()
+object Now: Time()
+```
+
+* Object equality should be **symmetric**, meaning that the result of `x == y` and `y == x` should always be the same. It can be easily violated when in our equality we accept objects of a different type. For instance, let’s say that we implemented a class to represent complex numbers and made its equality accept `Double`:
+
+```
+class Complex(
+   val real: Double,
+   val imaginary: Double
+) {
+   // DO NOT DO THIS, violates symmetry
+   override fun equals(other: Any?): Boolean {
+       if (other is Double) { 
+          return imaginary == 0.0 && real == other
+       }
+       return other is Complex &&
+               real == other.real &&
+               imaginary == other.imaginary
+   }
+}
+```
+
+The problem is that `Double` does not accept equality with `Complex`. Therefore the result depends on the order of the elements:
+
+```
+Complex(1.0, 0.0).equals(1.0) // true
+1.0.equals(Complex(1.0, 0.0)) // false
+```
+
+Lack of symmetry means, for instance, unexpected results on collections `contains` or on unit tests assertions.
+
+```
+val list = listOf<Any>(Complex(1.0, 0.0))
+list.contains(1.0) // Currently on the JVM this is false,
+// but it depends on the collection’s implementation 
+// and should not be trusted to stay the same
+```
+
+**When equality is not symmetric when equality is implemented inside another object, we cannot trust the result because it depends on whether this object compares x to y or y to x.** This fact is not documented and it is not a part of the contract as object creators assume that both should work the same (they assume symmetry). It can also change at any moment - creators during some refactorization might change the order. If your object is not symmetric, it might lead to unexpected and really hard to debug errors in your implementation. This is why when we implement `equals` we should always consider equality. 
+
+The general solution is that we should not accept equality between different classes. I’ve never seen a case where it would be reasonable. Notice that in Kotlin similar classes are not equal to each other. 1 is not equal to 1.0, and 1.0 is not equal to 1.0F. Those are different types and they are not even comparable. Also, in Kotlin we cannot use the `==` operator between two different types that do not have a common superclass other than `Any`:
+
+```
+Complex(1.0, 0.0) == 1.0 // ERROR
+```
+
+* Object equality should be **transitive**, meaning that for any non-null reference values `x`, `y`, and `z`, if `x.equals(y)` returns `true` and `y.equals(z)` returns `true`, then `x.equals(z)` should return `true`. The biggest problem with transitivity is when we implement different kinds of equality that check a different subtype of properties. For instance, let’s say that we have `Date` and `DateTime` defined this way:
+
+```
+open class Date(
+   val year: Int,
+   val month: Int,
+   val day: Int
+) {
+   // DO NOT DO THIS, symmetric but not transitive
+   override fun equals(o: Any?): Boolean = when (o) {
+       is DateTime -> this == o.date
+       is Date -> o.day == day && o.month == month && 
+o.year == year
+       else -> false
+   }
+
+   // ...
+}
+
+class DateTime(
+   val date: Date,
+   val hour: Int,
+   val minute: Int,
+   val second: Int
+): Date(date.year, date.month, date.day) {
+   // DO NOT DO THIS, symmetric but not transitive
+   override fun equals(o: Any?): Boolean = when (o) {
+       is DateTime -> o.date == date && o.hour == hour && 
+o.minute == minute && o.second == second
+       is Date -> date == o
+       else -> false
+   }
+
+   // ...
+}
+```
+
+The problem with the above implementation is that when we compare two `DateTime`, we check more properties than when we compare `DateTime` and `Date`. Therefore two `DateTime` with the same day but a different time will not be equal to each other, but they’ll both be equal to the same `Date`. As a result, their relation is not transitive:
+
+```
+val o1 = DateTime(Date(1992, 10, 20), 12, 30, 0)
+val o2 = Date(1992, 10, 20)
+val o3 = DateTime(Date(1992, 10, 20), 14, 45, 30)
+
+o1 == o2 // true
+o2 == o3 // true
+o1 == o3 // false <- So equality is not transitive
+```
+
+Notice that here the restriction to compare only objects of the same type didn’t help because we’ve used inheritance. Such inheritance violates the *Liskov substitution principle* and should not be used. In this case, use composition instead of inheritance (*Item 36: Prefer composition over inheritance*). When you do, do not compare two objects of different types. These classes are perfect examples of objects holding data and representing them this way is a good choice:
+
+```
+data class Date(
+   val year: Int,
+   val month: Int,
+   val day: Int
+)
+
+data class DateTime(
+   val date: Date,
+   val hour: Int,
+   val minute: Int,
+   val second: Int
+)
+
+val o1 = DateTime(Date(1992, 10, 20), 12, 30, 0)
+val o2 = Date(1992, 10, 20)
+val o3 = DateTime(Date(1992, 10, 20), 14, 45, 30)
+
+o1.equals(o2) // false
+o2.equals(o3) // false
+o1 == o3 // false
+
+o1.date.equals(o2) // true
+o2.equals(o3.date) // true
+o1.date == o3.date // true
+```
+
+* Equality should be **consistent**, meaning that the method invoked on two objects should always return the same result unless one of those objects was modified. For immutable objects, the result should be always the same. In other words, we expect `equals` to be a pure function (do not modify the state of an object) for which result always depends only on input and state of its receiver. We’ve seen the `Time` class that violated this principle. This rule was also famously violated in `java.net.URL.equals()`.
+
+* Never equal to null: for any non-null value `x`, `x.equals(null)` must return `false`. It is important because `null` should be unique and no object should be equal to it. 
+
+### Problem with equals in URL
+
+One example of a really poorly designed `equals` is the one from `java.net.URL`. Equality of two `java.net.URL` objects depends on a network operation as two hosts are considered equivalent if both hostnames can be resolved into the same IP addresses. This is a big mistake! Equality should not be network dependent. 
+
+```
+import java.net.URL
+
+fun main() {
+   val enWiki = URL("https://en.wikipedia.org/")
+   val wiki = URL("https://wikipedia.org/")
+   println(enWiki == wiki)
+   // true when internet turned on, false otherwise
+}
+```
+
+Here are the most important problems with this solution:
+
+* **This behavior is inconsistent.** For instance, two URLs could be equal when a network is available and unequal when it is not. Also, the network may change. The IP address for a given hostname varies over time and by the network. Two URLs could be equal on some networks and unequal on others.
+
+* **The network may be slow and** **we expect** `equals` **and** `hashCode` **to be fast.** A typical problem is when we check if a URL is present in a list. Such an operation would require a network call for each element on the list. Also on some platforms, like Android, network operations are prohibited on the main thread. As a result, even adding to a set of URLs needs to be started on a separate thread. 
+
+* **The defined behavior is known to be inconsistent with virtual hosting in HTTP.** Equal IP addresses do not imply equal content. Virtual hosting permits unrelated sites to share an IP address. This method could report two otherwise unrelated URLs to be equal because they're hosted on the same server.
+
+In Android, this problem was fixed in Android 4.0 (Ice Cream Sandwich). Since that release, URLs are only equal if their hostnames are equal. When we use Kotlin/JVM on other platforms, it is recommended to use `java.net.URI` instead of `java.net.URL`.
+
+### Implementing equals
+
+I recommend against implementing equals yourself unless you have a good reason. Instead, use default or data class equality. If you do need custom equality, always consider if your implementation is reflexive, symmetric, transitive, and consistent. Make such class final, or beware that subclasses should not change how equality behaves. It is hard to make custom equality and support inheritance at the same time. Some even say it is impossible[^equals_and_contract]. Data classes are final.
+
+
+
+## Item 41: Respect the contract of `hashCode`
+
+Another method from `Any` that we can override is `hashCode`. First, let’s explain why we need it. The `hashCode` function is used in a popular data structure called *hash table*, that is used in a variety of different collections or algorithms under the hood.
+
+### Hash table
+
+Let’s start with the problem hash table was invented to solve. Let’s say that we need a collection that quickly both adds and finds elements. An example of this type of collection is a set or map, neither of which allow for duplicates. So whenever we add an element, we first need to look for an equal element. 
+
+A collection based on an array or on linked elements is not fast enough for checking if it contains an element, because to check that we need to compare this element with all elements on this list one after another. Imagine that you have an array with millions of pieces of text, and now you need to check if it contains a certain one. It will be really time-consuming to compare your text one after another with those millions. 
+
+A popular solution to this problem is a hash table. All you need is a function that will assign a number to each element. Such a function is called a hash function and it must always return the same value for equal elements. Additionally, it is good if our hash function:
+
+* Is fast
+
+* Ideally returns different values for unequal elements, or at least has enough variation to limit collisions to a minimum
+
+Such a function categorizes elements  into different buckets by assigning a number to each one. What is more, based on our requirement for the hash function, all elements equal to each other will always be placed in the same bucket. Those buckets are kept in a structure called hash table, which is an array with a size equal to the number of buckets. Every time we add an element, we use our hash function to calculate where it should be placed, and we add it there. Notice that this process is very fast because calculating the hash should be fast, and then we just use the result of the hash function as an index in the array to find our bucket. When we search for an element, we find its bucket the same way and then we only need to check if it is equal to any element in this bucket. We don’t need to check any other bucket, because the hash function must return the same value for equal elements. This way, at a low cost, it divides the number of operations needed to find an element by the number of buckets. For instance, if we have 1,000,000 elements and 1,000 buckets, searching for duplicates only requires to compare about 1,000 elements on average, and the performance cost of this improvement is really small. 
+
+To see a more concrete example, let’s say that we have the following strings and a hash function that splits into 4 buckets:
+
+| --------- | --------- |
+| Text | Hash code |
+| --------- | --------- |
+| "How much wood would a woodchuck chuck" | 3 |
+| --------- | --------- |
+| "Peter Piper picked a peck of pickled peppers" | 2 |
+| --------- | --------- |
+| "Betty bought a bit of butter" | 1 |
+| --------- | --------- |
+| "She sells seashells by the seashore" | 2 |
+| --------- | --------- |
+
+
+Based on those numbers, we will have the following hash table built:
+
+| --------- | --------- |
+| Index | Object to which hash table points |
+| --------- | --------- |
+| 0 | [] |
+| --------- | --------- |
+| 1 | ["Betty bought a bit of butter"] |
+| --------- | --------- |
+| 2 | ["Peter Piper picked a peck of pickled peppers", "She sells seashells by the seashore" ] |
+| --------- | --------- |
+| 3 | ["How much wood would a woodchuck chuck"] |
+| --------- | --------- |
+
+
+Now, when we are checking if a new text is in this hash table, we are calculating its hash code. If it is equal to 0, then we know that it is not on this list. If it is either 1 or 3, we need to compare it with a single text. If it is 2, we need to compare it with two pieces of text. 
+
+This concept is very popular in technology. It is used in databases, in many internet protocols, and also in standard library collections in many languages. In Kotlin/JVM both the default set (`LinkedHashSet`) and default map (`LinkedHashMap`) use it. To produce a hash code, we use the `hashCode` function[^footnote_620_note].
+
+### Problem with mutability
+
+Notice that a hash is calculated for an element only when this element is added. An element is not moved when it mutates. This is why both `LinkedHashSet` and `LinkedHashMap` key will not behave properly when an object mutates after it has been added:
+
+```
+data class FullName(
+   var name: String,
+   var surname: String
+)
+
+val person = FullName("Maja", "Markiewicz")
+val set = mutableSetOf<FullName>()
+set.add(person)
+person.surname = "Moskała"
+print(person) // FullName(name=Maja, surname=Moskała)
+print(person in set) // false
+print(set) // [FullName(name=Maja, surname=Moskała)]
+```
+
+This problem was already noted on *Item 1: Limit mutability*: Mutable objects are not to be used in data structures based on hashes or on any other data structure that organizes elements based on their mutable properties. We should not use mutable elements for sets or as keys for maps, or at least we should not mutate elements that are in such collections. This is also a great reason to use immutable objects in general. 
+
+### The contract of hashCode
+
+Knowing what we need `hashCode` for, it should be clear how we expect it to behave. The formal contract is as follows (Kotlin 1.3.11):
+
+* Whenever it is invoked on the same object more than once, the `hashCode` method must consistently return the same integer, provided no information used in `equals` comparisons on the object is modified.
+
+* If two objects are equal according to the `equals` method, then calling the `hashCode` method on each of the two objects must produce the same integer result. 
+
+Notice that the first requirement is that we need `hashCode` to be **consistent**. The second one is the one that developers often forget about, and that needs to be highlighted: `hashCode` **always needs to be consistent with** `equals`**, and equal elements must have the same hash code.** If they don’t, elements will be lost in collections using a hash table under the hood: 
+
+```
+class FullName(
+   var name: String,
+   var surname: String
+) {
+   override fun equals(other: Any?): Boolean =
+       other is FullName
+               && other.name == name
+               && other.surname == surname
+}
+
+val set = mutableSetOf<FullName>()
+set.add(FullName("Marcin", "Moskała"))
+print(FullName("Marcin", "Moskała") in set) // false
+print(FullName("Marcin", "Moskała") == 
+   FullName("Marcin", "Moskała")) // true
+```
+
+This is why Kotlin suggests overriding `hashCode` when you have a custom `equals` implementation. 
+
+{width: 100%}
+![](image_14.png)
+
+
+
+There is also a requirement that is not required, but very important if we want this function to be useful. `hashCode` should spread elements as widely as possible. Different elements should have the highest possible probability of having different hash values. 
+
+Think about what happens when many different elements are placed in the same bucket - there is no advantage in using a hash table! An extreme example would be making `hashCode` always return the same number. Such a function would always place all elements into the same bucket. This is fulfilling the formal contract, but it is completely useless. There is no advantage to using a hash table when `hashCode` always returns the same value. Just take a look at the examples below where you can see a properly implemented `hashCode`, and one that always returns 0. For each `equals` we added a counter that counts how many times it was used. You can see that when we operate on sets with values of both types, the second one, named `Terrible`, requires many more comparisons:
+
+```
+class Proper(val name: String) {
+
+   override fun equals(other: Any?): Boolean {
+       equalsCounter++
+       return other is Proper && name == other.name
+   }
+
+   override fun hashCode(): Int {
+       return name.hashCode()
+   }
+
+   companion object {
+       var equalsCounter = 0
+   }
+}
+
+class Terrible(val name: String) {
+   override fun equals(other: Any?): Boolean {
+       equalsCounter++
+       return other is Terrible && name == other.name
+   }
+
+   // Terrible choice, DO NOT DO THAT
+   override fun hashCode() = 0
+
+   companion object {
+       var equalsCounter = 0
+   }
+}
+
+val properSet = List(10000) { Proper("$it") }.toSet()
+println(Proper.equalsCounter) // 0
+val terribleSet = List(10000) { Terrible("$it") }.toSet()
+println(Terrible.equalsCounter) // 50116683
+
+Proper.equalsCounter = 0
+println(Proper("9999") in properSet) // true
+println(Proper.equalsCounter) // 1
+
+Proper.equalsCounter = 0
+println(Proper("A") in properSet) // false
+println(Proper.equalsCounter) // 0
+
+Terrible.equalsCounter = 0
+println(Terrible("9999") in terribleSet) // true
+println(Terrible.equalsCounter) // 4324
+
+Terrible.equalsCounter = 0
+println(Terrible("A") in terribleSet) // false
+println(Terrible.equalsCounter) // 10001
+```
+
+### Implementing hashCode
+
+We define `hashCode` in Kotlin practically only when we define custom `equals`. When we use the data modifier, it generates both `equals` and a consistent `hashCode`. When you do not have a custom `equals` method, do not define a custom `hashCode` unless you are sure you know what you are doing and you have a good reason. When you have a custom `equals`, implement `hashCode` that always returns the same value for equal elements. 
+
+If you implemented typical `equals` that checks equality of significant properties, then a typical `hashCode` should be calculated using the hash codes of those properties. How can we make a single hash code out of those many hash codes? A typical way is that we accumulate them all in a result, and every time we add the next one, we multiply the result by the number 31. It doesn’t need to be exactly 31, but its characteristics make it a good number for this purpose. It is used this way so often that now we can treat it as a convention. Hash codes generated by the data modifier are consistent with this convention. Here is an example implementation of a typical `hashCode` together with its `equals`:
+
+```
+class DateTime(
+   private var millis: Long = 0L,
+   private var timeZone: TimeZone? = null
+) {
+   private var asStringCache = ""
+   private var changed = false
+
+   override fun equals(other: Any?): Boolean =
+       other is DateTime &&
+               other.millis == millis &&
+               other.timeZone == timeZone
+
+   override fun hashCode(): Int {
+       var result = millis.hashCode()
+       result = result * 31 + timeZone.hashCode()
+       return result
+   }
+}
+```
+
+One helpful function on Kotlin/JVM is `Objects.hashCode` that calculates hash for us:
+
+```
+override fun hashCode(): Int = 
+    Objects.hash(timeZone, millis)
+```
+
+There is no such function in the Kotlin stdlib, but if you need it on other platforms you can implement it yourself: 
+
+```
+override fun hashCode(): Int =
+   hashCodeFrom(timeZone, millis)
+
+inline fun hashCodeOf(vararg values: Any?) =
+   values.fold(0) { acc, value ->
+       (acc * 31) + value.hashCode()
+   }
+```
+
+The reason why such function is not in the stdlib is that we rarely need to implement `hashCode` ourselves. For instance, in the `DateTime` class presented above, instead of implementing `equals` and `hashCode` ourselves, we can just use `data` modifier:
+
+```
+data class DateTime2(
+   private var millis: Long = 0L,
+   private var timeZone: TimeZone? = null
+) {
+   private var asStringCache = ""
+   private var changed = false
+}
+```
+
+When you do implement `hashCode`, remember that the most important rule is that it always needs to be consistent with `equals`, and it should always return the same value for elements that are equal. 
+
+
+
+
+
+
+## Item 42: Respect the contract of `compareTo`
+
+The `compareTo` method is not in the `Any` class. It is an operator in Kotlin that translates into the mathematical inequality signs:
+
+```
+obj1 > obj2 // Translates to obj1.compareTo(obj2) > 0
+obj1 < obj2 // Translates to obj1.compareTo(obj2) < 0
+obj1 >= obj2 // Translates to obj1.compareTo(obj2) >= 0
+obj1 <= obj2 // Translates to obj1.compareTo(obj2) <= 0
+```
+
+It is also located in the `Comparable<T>` interface. When an object implements this interface or when it has an operator method named `compareTo`, it means that this object has a natural order. Such an order needs to be:
+
+* **Antisymmetric**, meaning that if a >= b and b >= a then a == b. Therefore there is a relation between comparison and equality and they need to be consistent with each other. 
+
+* **Transitive**, meaning that if a >= b and b >= c then a >= c. Similarly when a > b and b > c then a > c. This property is important because without it, sorting of elements might take literally forever in some sorting algorithms. 
+
+* **Connex**, meaning that there must be a relationship between every two elements. So either a >= b, or b >= a. In Kotlin, it is guaranteed by typing system for `compareTo` because it returns `Int`, and every `Int` is either positive, negative or zero. This property is important because if there is no relationship between two elements, we cannot use classic sorting algorithms like quicksort or insertion sort. Instead, we need to use one of the special algorithms for partial orders, like topological sorting. 
+
+### Do we need a compareTo?
+
+In Kotlin we rarely implement `compareTo` ourselves. We get more freedom by specifying the order on a case by case basis than by assuming one global natural order. For instance, we can sort a collection using `sortedBy` and provide a key that is comparable. So in the example below, we sort users by their surname:
+
+```
+class User(val name: String, val surname: String)
+val names = listOf<User>(/*...*/)
+
+val sorted = names.sortedBy { it.surname }
+```
+
+What if we need a more complex comparison than just by a key? For that, we can use the `sortedWith` function that sorts elements using a comparator. This comparator can be produced using a function `compareBy`. So in the following example, we first sort users comparing them by their `surname`, and if they match, we compare them by their `name`:
+
+```
+val sorted = names
+    .sortedWith(compareBy({ it.surname }, { it.name }))
+```
+
+Surely, we might make `User` implement `Comparable<User>`, but what order should it choose? We might need to sort them by any property. When this is not absolutely clear, it is better to not make such objects comparable. 
+
+`String` has a natural order, which is an alphanumerical order, and so it implements `Comparable<String>`. This fact is very useful because we often do need to sort text alphanumerically. However, it also has its downsides. For instance, we can compare two strings using an inequality sign, which seems highly unintuitive. Most people seeing two strings comparison using inequality signs will be rather confused. 
+
+```
+// DON'T DO THIS! 
+print("Kotlin" > "Java") // true
+```
+
+Surely there are objects with a clear natural order. Date and time is a perfect example. Although if you are not sure about whether your object has a natural order, it is better to use comparators instead. If you use a few of them often, you can place them in the companion object of your class:
+
+```
+class User(val name: String, val surname: String) {
+   // ...
+
+   companion object {
+       val DISPLAY_ORDER =
+               compareBy(User::surname, User::name)
+   }
+}
+
+val sorted = names.sortedWith(User.DISPLAY_ORDER)
+```
+
+### Implementing `compareTo`
+
+When we do need to implement `compareTo` ourselves, we have top-level functions that can help us. If all you need is to compare two values, you can use the `compareValues` function:
+
+```
+class User(
+   val name: String, 
+   val surname: String
+): Comparable<User> {
+   override fun compareTo(other: User): Int =
+           compareValues(surname, other.surname)
+}
+```
+
+If you need to use more values, or if you need to compare them using selectors, use `compareValuesBy`:
+
+```
+class User(
+   val name: String, 
+   val surname: String
+): Comparable<User> {
+   override fun compareTo(other: User): Int =
+     compareValuesBy(this, other, { it.surname }, { 
+it.name })
+}
+```
+
+This function helps us create the most comparators we need. If you need to implement some with a special logic, remember that it should return:
+
+* 0 if the receiver and `other` are equal
+
+* a positive number if the receiver is greater than `other`
+
+* a negative number if the receiver is smaller than `other`
+
+Once you did that, don't forget to verify that your comparison is antisymmetric, transitive and connex. 
+
+
+## Item 43: Consider extracting non-essential parts of your API into extensions
+
+When we define final methods in a class, we need to make a decision if we want to define them as members, or if we want to define them as extension functions. 
+
+```
+// Defining methods as members
+class Workshop(/*...*/) {
+   //...
+
+   fun makeEvent(date: DateTime): Event = //...
+
+   val permalink
+       get() = "/workshop/$name"
+}
+```
+
+```
+// Defining methods as extensions
+class Workshop(/*...*/) {
+   //...
+}
+
+fun Workshop.makeEvent(date: DateTime): Event = //...
+
+val Workshop.permalink
+   get() = "/workshop/$name"
+```
+
+Both approaches are similar in many ways. Their use and even referencing them via reflection is very similar:
+
+```
+fun useWorkshop(workshop: Workshop) {
+   val event = workshop.makeEvent(date)
+   val permalink = workshop.permalink
+  
+   val makeEventRef = Workshop::makeEvent
+   val permalinkPropRef = Workshop::permalink
+}
+```
+
+There are also significant differences though. They both have their pros and cons, and one way does not dominate over another. This is why my suggestion is to consider such extraction, not necessarily to do it. The point is to make smart decisions, and for that, we need to understand the differences. 
+
+The biggest difference between members and extensions in terms of use is that **extensions need to be imported separately**. For this reason, they can be located in a different package. This fact is used when we cannot add a member ourselves. It is also used in projects designed to separate data and behavior. Properties with fields need to be located in a class, but methods can be located separately as long as they only access public API of the class. 
+
+Thanks to the fact that extensions need to be imported **we can have many extensions with the same name on the same type**. This is good because different libraries can provide extra methods and we won’t have a conflict. On the other hand, it would be dangerous to have two extensions with the same name, but having different behavior. For such cases, we can cut the Gordian knot by making a member function. The compiler always chooses member functions over extensions[^footnote_630_note].
+
+Another significant difference is that **extensions are not virtual**, meaning that they cannot be redefined in derived classes. The extension function to call is selected statically during compilation. This is different behavior from member elements that are virtual in Kotlin. Therefore we should not use extensions for elements that are designed for inheritance. 
+
+```
+open class C
+class D: C()
+fun C.foo() = "c"
+fun D.foo() = "d"
+
+fun main() {
+   val d = D()
+   print(d.foo()) // d
+   val c: C =d
+   print(c.foo()) // c
+
+   print(D().foo()) // d
+   print((D() as C).foo()) // c
+}
+```
+
+This behavior is the result of the fact that extension functions under the hood are compiled into normal functions where the extension’s receiver is placed as the first argument: 
+
+```
+fun foo(`this$receiver`: C) = "c"
+fun foo(`this$receiver`: D) = "d"
+
+fun main() {
+   val d = D()
+   print(foo(d)) // d
+   val c: C =d
+   print(foo(c)) // c
+
+   print(foo(D())) // d
+   print(foo(D() as C)) // c
+}
+```
+
+Another consequence of this fact is that **we define extensions on types, not on classes**. This gives us more freedom. For instance, we can define an extension on a nullable or a concrete substitution of a generic type:
+
+```
+inline fun CharSequence?.isNullOrBlank(): Boolean {
+   contract {
+       returns(false) implies (this@isNullOrBlank != null)
+   }
+
+   return this == null || this.isBlank()
+}
+
+public fun Iterable<Int>.sum(): Int {
+   var sum: Int = 0
+   for (element in this) {
+       sum += element
+   }
+   return sum
+}
+```
+
+The last important difference is that **extensions are not listed as members in the class reference**. This is why they are not considered by annotation processors and why, when we process a class using annotation processing, we cannot extract elements that should be processed into extension functions. On the other hand, if we extract non-essential elements into extensions, we don’t need to worry about them being seen by those processors. We don’t need to hide them, because they are not in the class anyway.
+
+### Summary
+
+The most important differences between members and extensions are:
+
+* Extensions need to be imported
+* Extensions are not virtual
+* Member has a higher priority
+* Extensions are on a type, not on a class
+
+* Extensions are not listed in the class reference
+
+To summarize it, extensions give us more freedom and flexibility. They are more noncommittal. Although they do not support inheritance, annotation processing, and it might be confusing that they are not present in the class. Essential parts of our API should rather stay as members, but there are good reasons to extract non-essential parts of your API as extensions. 
+
+
+## Item 44: Avoid member extensions
+
+When we define an extension function to some class, it is not added to this class as a member. An extension function is just a different kind of function that we call on the first argument that is there, called a receiver. Under the hood, extension functions are compiled to normal functions, and the receiver is placed as the first parameter. For instance, the following function:
+
+```
+fun String.isPhoneNumber(): Boolean =
+   length == 7 && all { it.isDigit() }
+```
+
+Under the hood is compiled to a function similar to this one:
+
+```
+
+fun isPhoneNumber(`$this`: String): Boolean =
+   `$this`.length == 7 && `$this`.all { it.isDigit() }
+```
+
+One of the consequences of how they are implemented is that we can have member extensions or even define extensions in interfaces:
+
+```
+interface PhoneBook {
+   fun String.isPhoneNumber(): Boolean
+}
+
+class Fizz: PhoneBook {
+   override fun String.isPhoneNumber(): Boolean =
+        length == 7 && all { it.isDigit() }
+}
+```
+
+Even though it is possible, there are good reasons to avoid defining member extensions (except for DSLs). **Especially, do not define extension as members just to restrict visibility**.
+
+```
+// Bad practice, do not do this
+class PhoneBookIncorrect {
+   // ...  
+
+   fun String.isPhoneNumber() =
+     length == 7 && all { it.isDigit() }
+}
+```
+
+One big reason is that it does not really restrict visibility. It only makes it more complicated to use the extension function since the user would need to provide both the extension and dispatch receivers:
+
+```
+PhoneBookIncorrect().apply { "1234567890".test() }
+```
+
+**You should restrict the extension visibility using a visibility modifier and not by placing it locally.** 
+
+```
+// This is how we limit extension functions visibility
+class PhoneBookCorrect {
+   // ...  
+}
+
+private fun String.isPhoneNumber() = 
+     length == 7 && all { it.isDigit() }
+```
+
+There are a few good reasons why we prefer to avoid member extensions:
+
+* Reference is not supported:
+
+```
+val ref = String::isPhoneNumber
+val str = "1234567890"
+val boundedRef = str::isPhoneNumber
+
+val refX = PhoneBookIncorrect::isPhoneNumber // ERROR
+val book = PhoneBookIncorrect()
+val boundedRefX = book::isPhoneNumber // ERROR
+```
+
+* Implicit access to both receivers might be confusing: 
+
+```
+class A {
+   val a = 10
+}
+class B {
+   val b = 10
+  
+   fun A.test() = a + b
+}
+```
+* When we expect an extension to modify or reference a receiver, it is not clear if we modify the extension or dispatch receiver (the class in which the extension is defined):
+
+```
+class A {
+   //...
+}
+class B {
+   //...
+  
+   fun A.update() = ... // Shell is update A or B?
+}
+```
+* For less experienced developers it might be counterintuitive or scary to see member extensions. 
+
+To summarize, if there is a good reason to use member extension, it is fine. Just be aware of the downsides and generally try to avoid it. To restrict visibility, use visibility modifiers. Just placing an extension in a class does not limit its use from outside. 
+
+
+
+
+[^footnote_610_note]: Unless it is Java SAM and Java function: since in such cases there is special support and we can pass a function type instead
+[^footnote_611_note]: In the full version, it contained many more modes.
+[^footnote_630_note]: The only exception is when an extension in the Kotlin stdlib has kotlin.internal.HidesMembers internal annotation
+[^footnote_620_note]: Often, after some transformations, as hashCode returns Int, that is 32-bit signed integer, meaning 4294967296 buckets, which is too much for a set that might contain only one element. To solve this problem, there is a transformation that makes this number much smaller. When it is needed, the algorithm makes the hash table bigger through a transformation and assigning all elements to new buckets.
+[^equals_and_contract]: As Effective Java by Joshua Bloch, third edition claims in *Item 10: Obey the general contract when overriding equals*: “There is no way to extend an instantiable class and add a value component while preserving the equals contract, unless you’re willing to forgo the benefits of object-oriented abstraction.”.
